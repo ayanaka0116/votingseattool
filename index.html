@@ -54,6 +54,24 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
 .time-settings { width: 100%; background: #1a1830; padding: 12px; border-radius: 12px; margin-top: 15px; border: 1px solid #2a2848; display: none; }
 .time-settings label { font-size: 11px; color: #9a96b8; display: block; margin-bottom: 6px; }
 .time-settings input { background: #0f0f13; border: 1px solid #3a3860; border-radius: 8px; color: #e8e6f0; padding: 10px; font-size: 14px; width: 100%; font-family: inherit; }
+.time-settings input[readonly] { 
+  background: #0f0f13; 
+  border-color: #2a2848; 
+  color: #6a6880; 
+  cursor: not-allowed; 
+}
+.time-settings input[readonly] + .readonly-badge { display: inline-flex; }
+.readonly-badge { 
+  display: none; 
+  align-items: center; 
+  gap: 4px;
+  font-size: 10px; 
+  color: #4ade80; 
+  margin-top: 4px;
+  background: #0f2820;
+  padding: 3px 8px;
+  border-radius: 20px;
+}
 .ocr-loading { font-size: 10px; color: #7c6ff7; margin-top: 8px; display: none; }
 
 #final-image-container img { width: 100%; border-radius: 12px; display: block; margin-bottom: 15px; }
@@ -98,7 +116,11 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
     <div class="time-settings" id="time-area">
       <label id="time-label"><i class="ti ti-clock"></i> 印字日時を確認（手動で修正も可能です）</label>
       <input type="text" id="input-timestamp" placeholder="解析中..." enterkeyhint="done">
+      <span class="readonly-badge"><i class="ti ti-lock"></i> 自動取得済み（編集不可）</span>
       <div id="ocr-status" class="ocr-loading"><i class="ti ti-loader-2"></i> 画像データを解析しています...</div>
+
+      <label style="margin-top:14px; display:block;"><i class="ti ti-brand-x"></i> X アカウント ID</label>
+      <input type="text" id="input-xid" placeholder="@username（例：@vote_fan123）" enterkeyhint="done" style="margin-top:6px;">
       
       <button class="btn btn-primary" id="btn-apply" style="width:100%; margin-top:15px; padding:15px; font-size:14px; justify-content:center;">
         <i class="ti ti-wand"></i>加工して完成させる
@@ -178,15 +200,18 @@ $('btn-go-to-time').onclick = async () => {
   const exifDate = await getExifDate(currentFile);
   if (exifDate) {
     $('input-timestamp').value = exifDate;
-    $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (写真情報から取得)';
+    $('input-timestamp').readOnly = true;
+    $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (写真情報から自動取得)';
   } else {
     const ocrDate = await runOCR(currentDataURL);
     if (ocrDate) {
       $('input-timestamp').value = ocrDate;
-      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (画像認識から取得)';
+      $('input-timestamp').readOnly = true;
+      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (画像認識から自動取得)';
     } else {
       $('input-timestamp').value = getNowFormatted();
-      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (現在時刻)';
+      $('input-timestamp').readOnly = false;
+      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (手動で修正できます)';
     }
   }
 };
@@ -235,10 +260,47 @@ $('btn-clear').onclick = () => { faces = []; renderBoxes(); };
 $('btn-apply').onclick = () => {
   const canvas = document.createElement('canvas'); canvas.width = currentImg.width; canvas.height = currentImg.height; const ctx = canvas.getContext('2d'); ctx.drawImage(currentImg, 0, 0); const scale = currentImg.width / $('main-canvas').width;
   faces.forEach(f => { ctx.fillStyle = '#1e1c30'; ctx.fillRect(f.x * scale, f.y * scale, f.w * scale, f.h * scale); });
-  const ts = $('input-timestamp').value;
-  if (ts) {
-    const fs = Math.round(canvas.width * 0.035); ctx.font = `bold ${fs}px sans-serif`; ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-    const tw = ctx.measureText(ts).width; ctx.fillRect(canvas.width - tw - 25, canvas.height - fs - 35, tw + 15, fs + 15); ctx.fillStyle = '#ffffff'; ctx.fillText(ts, canvas.width - 20, canvas.height - 30);
+  const ts = $('input-timestamp').value.trim();
+  const xid = $('input-xid').value.trim();
+
+  const lines = [];
+  if (xid) lines.push(xid.startsWith('@') ? xid : '@' + xid);
+  if (ts)  lines.push(ts);
+
+  if (lines.length > 0) {
+    const fs = Math.round(canvas.width * 0.032);
+    ctx.font = `bold ${fs}px sans-serif`;
+    ctx.textAlign = 'center';
+
+    const lineH = Math.round(fs * 1.6);
+    const padX = 32, padY = 18;
+    const maxLineW = Math.max(...lines.map(l => ctx.measureText(l).width));
+    const boxW = maxLineW + padX * 2;
+    const boxH = lines.length * lineH + padY * 1.5;
+    const boxX = (canvas.width - boxW) / 2;
+    const boxY = Math.round(canvas.height * 0.025);
+
+    // Background (rounded rect)
+    const r = 14;
+    ctx.beginPath();
+    ctx.moveTo(boxX + r, boxY);
+    ctx.lineTo(boxX + boxW - r, boxY);
+    ctx.arcTo(boxX + boxW, boxY, boxX + boxW, boxY + r, r);
+    ctx.lineTo(boxX + boxW, boxY + boxH - r);
+    ctx.arcTo(boxX + boxW, boxY + boxH, boxX + boxW - r, boxY + boxH, r);
+    ctx.lineTo(boxX + r, boxY + boxH);
+    ctx.arcTo(boxX, boxY + boxH, boxX, boxY + boxH - r, r);
+    ctx.lineTo(boxX, boxY + r);
+    ctx.arcTo(boxX, boxY, boxX + r, boxY, r);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(15, 10, 30, 0.62)';
+    ctx.fill();
+
+    // Text
+    ctx.fillStyle = '#ffffff';
+    lines.forEach((line, i) => {
+      ctx.fillText(line, canvas.width / 2, boxY + padY + fs + i * lineH);
+    });
   }
   const img = document.createElement('img'); img.src = canvas.toDataURL('image/png'); $('final-image-container').innerHTML = ''; $('final-image-container').appendChild(img); $('editor').style.display = 'none'; $('result-wrap').style.display = 'block';
 };
