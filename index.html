@@ -209,9 +209,10 @@ $('btn-go-to-time').onclick = async () => {
       $('input-timestamp').readOnly = true;
       $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (画像認識から自動取得)';
     } else {
-      $('input-timestamp').value = getNowFormatted();
-      $('input-timestamp').readOnly = false;
-      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (手動で修正できます)';
+      $('input-timestamp').value = 'この画像から日時を取得できないため入力不可能です';
+      $('input-timestamp').readOnly = true;
+      $('input-timestamp').style.color = '#f87171';
+      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時';
     }
   }
 };
@@ -265,7 +266,8 @@ $('btn-apply').onclick = () => {
 
   const lines = [];
   if (xid) lines.push(xid.startsWith('@') ? xid : '@' + xid);
-  if (ts)  lines.push(ts);
+  const tsIsValid = ts && !ts.startsWith('この画像から');
+  if (tsIsValid) lines.push(ts);
 
   if (lines.length > 0) {
     const fs = Math.round(canvas.width * 0.032);
