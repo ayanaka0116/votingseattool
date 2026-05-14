@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>投票証明書 加工ツール</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -72,7 +71,6 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
   padding: 3px 8px;
   border-radius: 20px;
 }
-.ocr-loading { font-size: 10px; color: #7c6ff7; margin-top: 8px; display: none; }
 
 #final-image-container img { width: 100%; border-radius: 12px; display: block; margin-bottom: 15px; }
 </style>
@@ -117,7 +115,6 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
       <label id="time-label"><i class="ti ti-clock"></i> 印字日時を確認（手動で修正も可能です）</label>
       <input type="text" id="input-timestamp" placeholder="解析中..." enterkeyhint="done">
       <span class="readonly-badge"><i class="ti ti-lock"></i> 自動取得済み（編集不可）</span>
-      <div id="ocr-status" class="ocr-loading"><i class="ti ti-loader-2"></i> 画像データを解析しています...</div>
 
       <label style="margin-top:14px; display:block;"><i class="ti ti-brand-x"></i> X アカウント ID</label>
       <input type="text" id="input-xid" placeholder="@username（例：@vote_fan123）" enterkeyhint="done" style="margin-top:6px;">
@@ -158,16 +155,49 @@ async function getExifDate(file) {
   });
 }
 
-async function runOCR(imageSrc) {
-  $('ocr-status').style.display = 'block';
-  try {
-    const worker = await Tesseract.createWorker('eng');
-    const ret = await worker.recognize(imageSrc);
-    const text = ret.data.text;
-    await worker.terminate();
-    const match = text.match(/\d{1,4}[./-]\d{1,2}[./-]\d{1,4}\s\d{1,2}:\d{2}/) || text.match(/\d{1,2}:\d{2}/);
-    return match ? match[0] : null;
-  } catch (e) { return null; } finally { $('ocr-status').style.display = 'none'; }
+// PNGのメタデータチャンク（tEXt/iTXt）から日時を読み取る
+async function getPNGMetadataDate(file) {
+  if (!file.type.includes('png') && !file.name.toLowerCase().endsWith('.png')) return null;
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const buf = e.target.result;
+        const view = new DataView(buf);
+        // PNGシグネチャ確認
+        if (view.getUint32(0) !== 0x89504e47) { resolve(null); return; }
+        let offset = 8;
+        while (offset < buf.byteLength - 12) {
+          const length = view.getUint32(offset);
+          const type = String.fromCharCode(
+            view.getUint8(offset+4), view.getUint8(offset+5),
+            view.getUint8(offset+6), view.getUint8(offset+7)
+          );
+          if (type === 'tEXt' || type === 'iTXt') {
+            const bytes = new Uint8Array(buf, offset + 8, Math.min(length, 256));
+            const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+            // ISO形式 or スラッシュ区切りの日時を探す
+            const m = text.match(/(\d{4})[-\/:](\d{2})[-\/:](\d{2})[T ](\d{2}):(\d{2})/);
+            if (m) {
+              resolve(`${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`);
+              return;
+            }
+          }
+          if (type === 'IEND') break;
+          offset += 12 + length;
+        }
+        resolve(null);
+      } catch { resolve(null); }
+    };
+    reader.readAsArrayBuffer(file.slice(0, 65536));
+  });
+}
+
+// ファイルの更新日時（スクショ保存時刻）を取得
+function getFileModifiedDate(file) {
+  if (!file.lastModified) return null;
+  const d = new Date(file.lastModified);
+  return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
 $('input-timestamp').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('input-timestamp').blur(); });
@@ -197,24 +227,34 @@ $('btn-go-to-time').onclick = async () => {
   $('btn-go-to-time').style.display = 'none';
   $('time-area').style.display = 'block';
   $('time-area').scrollIntoView({ behavior: 'smooth' });
+  const pngDate = await getPNGMetadataDate(currentFile);
+  if (pngDate) {
+    $('input-timestamp').value = pngDate;
+    $('input-timestamp').readOnly = true;
+    $('time-label').innerHTML = '<i class="ti ti-clock"></i> スクショ日時 (画像データから自動取得)';
+    return;
+  }
+
   const exifDate = await getExifDate(currentFile);
   if (exifDate) {
     $('input-timestamp').value = exifDate;
     $('input-timestamp').readOnly = true;
-    $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (写真情報から自動取得)';
-  } else {
-    const ocrDate = await runOCR(currentDataURL);
-    if (ocrDate) {
-      $('input-timestamp').value = ocrDate;
-      $('input-timestamp').readOnly = true;
-      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (画像認識から自動取得)';
-    } else {
-      $('input-timestamp').value = 'この画像から日時を取得できないため入力不可能です';
-      $('input-timestamp').readOnly = true;
-      $('input-timestamp').style.color = '#f87171';
-      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時';
-    }
+    $('time-label').innerHTML = '<i class="ti ti-clock"></i> 撮影日時 (カメラ情報から自動取得)';
+    return;
   }
+
+  const modDate = getFileModifiedDate(currentFile);
+  if (modDate) {
+    $('input-timestamp').value = modDate;
+    $('input-timestamp').readOnly = true;
+    $('time-label').innerHTML = '<i class="ti ti-clock"></i> スクショ日時 (ファイル保存日時から自動取得)';
+    return;
+  }
+
+  $('input-timestamp').value = 'この画像から日時を取得できないため入力不可能です';
+  $('input-timestamp').readOnly = true;
+  $('input-timestamp').style.color = '#f87171';
+  $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時';
 };
 
 const setMode = (mode) => {
