@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>投票証明書 加工ツール</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f0f13; color: #e8e6f0; min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 0; margin: 0; }
+#app { width: 100%; max-width: 860px; padding: 15px; }
+.header { text-align: center; margin-bottom: 1.2rem; }
+.header h1 { font-size: 1.2rem; font-weight: 500; color: #f0eeff; }
+
+#upload-zone { border: 1.5px dashed #3a3860; border-radius: 18px; padding: 3rem 1rem; text-align: center; cursor: pointer; background: #13121a; }
+#upload-zone input { display: none; }
+.upload-icon { font-size: 2rem; color: #4a4870; margin-bottom: 1rem; display: block; }
+
+#editor, #result-wrap { display: none; }
+.status { font-size: 12px; color: #9a96b8; margin-bottom: 10px; padding: 10px; background: #1a1830; border-radius: 8px; border-left: 3px solid #7c6ff7; }
+
+.editor-top-tools { margin-bottom: 15px; display: flex; flex-direction: column; gap: 8px; }
+.mode-selector { background: #1a1830; padding: 4px; border-radius: 12px; display: flex; gap: 4px; }
+.mode-selector .btn { flex: 1; justify-content: center; }
+.edit-actions { display: flex; gap: 8px; }
+.edit-actions .btn { flex: 1; justify-content: center; }
+
+.canvas-wrap { 
+  position: relative; 
+  display: inline-block; 
+  max-width: 100%; 
+  border-radius: 12px; 
+  overflow: hidden; 
+  background: #000; 
+  touch-action: auto; 
+}
+#face-overlay { 
+  position: absolute; 
+  top: 0; left: 0; 
+  width: 100%; height: 100%; 
+  pointer-events: none; 
+}
+#main-canvas { display: block; max-width: 100%; height: auto; }
+
+.face-box { position: absolute; border: 2px solid #f87171; background: rgba(248,113,113,0.1); border-radius: 4px; pointer-events: none; }
+.btn { background: #2a2848; border: 1px solid #3a3860; border-radius: 8px; padding: 12px; color: #c4b8ff; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s; border: 1px solid transparent; }
+.btn.active { background: #7c6ff7; color: white; border-color: transparent; }
+.btn-primary { background: #7c6ff7; color: white; font-weight: bold; }
+.btn-primary:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn-danger { border-color: #7a3040; color: #f87171; }
+
+.time-settings { width: 100%; background: #1a1830; padding: 12px; border-radius: 12px; margin-top: 15px; border: 1px solid #2a2848; display: none; }
+.time-settings label { font-size: 11px; color: #9a96b8; display: block; margin-bottom: 6px; }
+.time-settings input { background: #0f0f13; border: 1px solid #3a3860; border-radius: 8px; color: #e8e6f0; padding: 10px; font-size: 14px; width: 100%; font-family: inherit; }
+.ocr-loading { font-size: 10px; color: #7c6ff7; margin-top: 8px; display: none; }
+
+#final-image-container img { width: 100%; border-radius: 12px; display: block; margin-bottom: 15px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="header"><h1>投票証明書 加工ツール</h1></div>
+  
+  <div id="upload-zone">
+    <input type="file" id="file-input" accept="image/*">
+    <i class="ti ti-photo-up upload-icon"></i>
+    <p style="font-size:13px;">画像をタップして選択</p>
+  </div>
+
+  <div id="editor">
+    <div class="status">隠したい範囲を指でなぞって囲んでください。</div>
+
+    <div class="editor-top-tools">
+      <div class="mode-selector">
+        <button class="btn active" id="mode-move"><i class="ti ti-arrows-maximize"></i>下部にスクロール</button>
+        <button class="btn" id="mode-hide"><i class="ti ti-square-x"></i>隠す範囲を選択する</button>
+      </div>
+      <div class="edit-actions">
+        <button class="btn" id="btn-undo"><i class="ti ti-arrow-back-up"></i>1つ前に戻る</button>
+        <button class="btn danger" id="btn-clear"><i class="ti ti-trash"></i>全部消す</button>
+      </div>
+    </div>
+
+    <div class="canvas-wrap" id="canvas-container">
+      <canvas id="main-canvas"></canvas>
+      <div id="face-overlay"></div>
+    </div>
+
+    <div id="step-nav" style="margin-top: 15px;">
+      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;" disabled>
+        範囲選択を完了して日時確認へ <i class="ti ti-arrow-narrow-right"></i>
+      </button>
+    </div>
+
+    <div class="time-settings" id="time-area">
+      <label id="time-label"><i class="ti ti-clock"></i> 印字日時を確認（手動で修正も可能です）</label>
+      <input type="text" id="input-timestamp" placeholder="解析中..." enterkeyhint="done">
+      <div id="ocr-status" class="ocr-loading"><i class="ti ti-loader-2"></i> 画像データを解析しています...</div>
+      
+      <button class="btn btn-primary" id="btn-apply" style="width:100%; margin-top:15px; padding:15px; font-size:14px; justify-content:center;">
+        <i class="ti ti-wand"></i>加工して完成させる
+      </button>
+    </div>
+  </div>
+
+  <div id="result-wrap">
+    <div class="status">完成！画像を長押しして保存してください。</div>
+    <div id="final-image-container"></div>
+    <div class="tools" style="display:flex; flex-direction:column; gap:10px;">
+      <button class="btn btn-primary" id="btn-download" style="width:100%; justify-content:center;"><i class="ti ti-external-link"></i>別タブで開いて保存</button>
+      <button class="btn" onclick="location.reload()" style="width:100%; justify-content:center;"><i class="ti ti-refresh"></i>最初から</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let faces = []; let isDrawing = false; let startPos = { x: 0, y: 0 }; 
+let currentImg = null; let currentMode = 'move'; 
+let currentFile = null; let currentDataURL = null;
+
+function getNowFormatted() { 
+  const now = new Date(); 
+  return `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,'0')}.${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`; 
+}
+
+async function getExifDate(file) {
+  return new Promise((resolve) => {
+    EXIF.getData(file, function() {
+      const dt = EXIF.getTag(this, "DateTimeOriginal") || EXIF.getTag(this, "DateTime");
+      resolve(dt ? dt.replace(/:/g, '.').substring(0, 16) : null);
+    });
+  });
+}
+
+async function runOCR(imageSrc) {
+  $('ocr-status').style.display = 'block';
+  try {
+    const worker = await Tesseract.createWorker('eng');
+    const ret = await worker.recognize(imageSrc);
+    const text = ret.data.text;
+    await worker.terminate();
+    const match = text.match(/\d{1,4}[./-]\d{1,2}[./-]\d{1,4}\s\d{1,2}:\d{2}/) || text.match(/\d{1,2}:\d{2}/);
+    return match ? match[0] : null;
+  } catch (e) { return null; } finally { $('ocr-status').style.display = 'none'; }
+}
+
+$('input-timestamp').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('input-timestamp').blur(); });
+
+$('file-input').onchange = e => {
+  currentFile = e.target.files[0];
+  if (!currentFile) return;
+  const reader = new FileReader();
+  reader.onload = async event => {
+    currentDataURL = event.target.result;
+    const img = new Image();
+    img.onload = () => {
+      currentImg = img;
+      const canvas = $('main-canvas');
+      const scale = Math.min(1, ($('app').clientWidth - 30) / currentImg.width);
+      canvas.width = currentImg.width * scale; canvas.height = currentImg.height * scale;
+      canvas.getContext('2d').drawImage(currentImg, 0, 0, canvas.width, canvas.height);
+      $('upload-zone').style.display = 'none'; $('editor').style.display = 'block';
+      setMode('move'); 
+    };
+    img.src = currentDataURL;
+  };
+  reader.readAsDataURL(currentFile);
+};
+
+$('btn-go-to-time').onclick = async () => {
+  $('btn-go-to-time').style.display = 'none';
+  $('time-area').style.display = 'block';
+  $('time-area').scrollIntoView({ behavior: 'smooth' });
+  const exifDate = await getExifDate(currentFile);
+  if (exifDate) {
+    $('input-timestamp').value = exifDate;
+    $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (写真情報から取得)';
+  } else {
+    const ocrDate = await runOCR(currentDataURL);
+    if (ocrDate) {
+      $('input-timestamp').value = ocrDate;
+      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (画像認識から取得)';
+    } else {
+      $('input-timestamp').value = getNowFormatted();
+      $('time-label').innerHTML = '<i class="ti ti-clock"></i> 印字日時 (現在時刻)';
+    }
+  }
+};
+
+const setMode = (mode) => {
+  currentMode = mode;
+  $('mode-move').className = mode === 'move' ? 'btn active' : 'btn';
+  $('mode-hide').className = mode === 'hide' ? 'btn active' : 'btn';
+  
+  if (mode === 'move') {
+    $('face-overlay').style.pointerEvents = 'none';
+    $('canvas-container').style.touchAction = 'auto';
+  } else {
+    $('face-overlay').style.pointerEvents = 'auto';
+    $('canvas-container').style.touchAction = 'none';
+  }
+};
+
+$('mode-move').onclick = () => setMode('move');
+$('mode-hide').onclick = () => setMode('hide');
+$('upload-zone').onclick = () => $('file-input').click();
+
+const overlay = $('face-overlay');
+const startEvent = e => { if (currentMode === 'move') return; isDrawing = true; const rect = overlay.getBoundingClientRect(); const clientX = e.touches ? e.touches[0].clientX : e.clientX; const clientY = e.touches ? e.touches[0].clientY : e.clientY; startPos = { x: clientX - rect.left, y: clientY - rect.top }; };
+const moveEvent = e => { if (!isDrawing) return; const rect = overlay.getBoundingClientRect(); const clientX = e.touches ? e.touches[0].clientX : e.clientX; const clientY = e.touches ? e.touches[0].clientY : e.clientY; const curX = clientX - rect.left; const curY = clientY - rect.top; let temp = $('temp-box') || document.createElement('div'); if (!temp.id) { temp.id = 'temp-box'; temp.className = 'face-box'; overlay.appendChild(temp); } temp.style.cssText = `left:${Math.min(startPos.x, curX)}px;top:${Math.min(startPos.y, curY)}px;width:${Math.abs(curX - startPos.x)}px;height:${Math.abs(curY - startPos.y)}px;`; if(e.cancelable) e.preventDefault(); };
+const endEvent = e => { if (!isDrawing) return; isDrawing = false; const rect = overlay.getBoundingClientRect(); const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX; const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY; const face = { x: Math.min(startPos.x, clientX - rect.left), y: Math.min(startPos.y, clientY - rect.top), w: Math.abs((clientX - rect.left) - startPos.x), h: Math.abs((clientY - rect.top) - startPos.y) }; if (face.w > 10 && face.h > 10) { faces.push(face); renderBoxes(); } if ($('temp-box')) $('temp-box').remove(); };
+
+overlay.addEventListener('touchstart', startEvent, {passive: false});
+window.addEventListener('touchmove', moveEvent, {passive: false});
+window.addEventListener('touchend', endEvent, {passive: false});
+
+function renderBoxes() { 
+  overlay.innerHTML = ''; 
+  faces.forEach((f) => { 
+    const div = document.createElement('div'); 
+    div.className = 'face-box'; 
+    div.style.cssText = `left:${f.x}px;top:${f.y}px;width:${f.w}px;height:${f.h}px;`; 
+    overlay.appendChild(div); 
+  }); 
+  $('btn-go-to-time').disabled = faces.length === 0; 
+}
+
+$('btn-undo').onclick = () => { faces.pop(); renderBoxes(); };
+$('btn-clear').onclick = () => { faces = []; renderBoxes(); };
+
+$('btn-apply').onclick = () => {
+  const canvas = document.createElement('canvas'); canvas.width = currentImg.width; canvas.height = currentImg.height; const ctx = canvas.getContext('2d'); ctx.drawImage(currentImg, 0, 0); const scale = currentImg.width / $('main-canvas').width;
+  faces.forEach(f => { ctx.fillStyle = '#1e1c30'; ctx.fillRect(f.x * scale, f.y * scale, f.w * scale, f.h * scale); });
+  const ts = $('input-timestamp').value;
+  if (ts) {
+    const fs = Math.round(canvas.width * 0.035); ctx.font = `bold ${fs}px sans-serif`; ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    const tw = ctx.measureText(ts).width; ctx.fillRect(canvas.width - tw - 25, canvas.height - fs - 35, tw + 15, fs + 15); ctx.fillStyle = '#ffffff'; ctx.fillText(ts, canvas.width - 20, canvas.height - 30);
+  }
+  const img = document.createElement('img'); img.src = canvas.toDataURL('image/png'); $('final-image-container').innerHTML = ''; $('final-image-container').appendChild(img); $('editor').style.display = 'none'; $('result-wrap').style.display = 'block';
+};
+
+$('btn-download').onclick = () => { const img = $('final-image-container').querySelector('img'); const nt = window.open(); nt.document.write('<body style="margin:0;background:#0f0f13;display:flex;align-items:center;justify-content:center;"><img src="' + img.src + '" style="max-width:100%;"></body>'); };
+</script>
+</body>
+</html>
