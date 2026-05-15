@@ -106,7 +106,7 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
     </div>
 
     <div id="step-nav" style="margin-top: 15px;">
-      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;" disabled>
+      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;">
         範囲選択を完了して日時確認へ <i class="ti ti-arrow-narrow-right"></i>
       </button>
     </div>
@@ -292,7 +292,7 @@ function renderBoxes() {
     div.style.cssText = `left:${f.x}px;top:${f.y}px;width:${f.w}px;height:${f.h}px;`; 
     overlay.appendChild(div); 
   }); 
-  $('btn-go-to-time').disabled = faces.length === 0; 
+  // 範囲選択なしでも次へ進める 
 }
 
 $('btn-undo').onclick = () => { faces.pop(); renderBoxes(); };
