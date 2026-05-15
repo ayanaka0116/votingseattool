@@ -126,10 +126,10 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
   </div>
 
   <div id="result-wrap">
-    <div class="status">完成！画像を長押しして保存してください。</div>
+    <div class="status">完成！下のボタンから画像を保存してください。</div>
     <div id="final-image-container"></div>
     <div class="tools" style="display:flex; flex-direction:column; gap:10px;">
-      <button class="btn btn-primary" id="btn-download" style="width:100%; justify-content:center;"><i class="ti ti-external-link"></i>別タブで開いて保存</button>
+      <button class="btn btn-primary" id="btn-download" style="width:100%; justify-content:center;"><i class="ti ti-download"></i>画像を保存する</button>
       <button class="btn" onclick="location.reload()" style="width:100%; justify-content:center;"><i class="ti ti-refresh"></i>最初から</button>
     </div>
   </div>
@@ -140,6 +140,7 @@ const $ = id => document.getElementById(id);
 let faces = []; let isDrawing = false; let startPos = { x: 0, y: 0 }; 
 let currentImg = null; let currentMode = 'move'; 
 let currentFile = null; let currentDataURL = null;
+let resultCanvas = null;
 
 function getNowFormatted() { 
   const now = new Date(); 
@@ -155,7 +156,40 @@ async function getExifDate(file) {
   });
 }
 
-// PNGのメタデータチャンク（tEXt/iTXt）から日時を読み取る
+// PNG の eXIf チャンク内の EXIF バイト列から日時を解析（Android スクショ対応）
+function parseExifBytes(data) {
+  if (data.length < 8) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const sig = view.getUint16(0);
+  const little = sig === 0x4949;
+  if (!little && sig !== 0x4D4D) return null;
+  if (view.getUint16(2, little) !== 0x002A) return null;
+  const get16 = o => view.getUint16(o, little);
+  const get32 = o => view.getUint32(o, little);
+  const ifd0 = get32(4);
+  if (ifd0 + 2 > data.length) return null;
+  const entryCount = get16(ifd0);
+  for (let i = 0; i < entryCount; i++) {
+    const e = ifd0 + 2 + i * 12;
+    if (e + 12 > data.length) break;
+    const tag = get16(e);
+    if (tag === 0x0132 || tag === 0x9003) {
+      const valOff = get32(e + 8);
+      if (valOff + 16 > data.length) continue;
+      let dt = '';
+      for (let j = 0; j < 19 && valOff + j < data.length; j++) {
+        const c = data[valOff + j];
+        if (c === 0) break;
+        dt += String.fromCharCode(c);
+      }
+      const m = dt.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/);
+      if (m) return `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`;
+    }
+  }
+  return null;
+}
+
+// PNGのメタデータチャンク（eXIf / tEXt / iTXt）から日時を読み取る
 async function getPNGMetadataDate(file) {
   if (!file.type.includes('png') && !file.name.toLowerCase().endsWith('.png')) return null;
   return new Promise((resolve) => {
@@ -164,7 +198,6 @@ async function getPNGMetadataDate(file) {
       try {
         const buf = e.target.result;
         const view = new DataView(buf);
-        // PNGシグネチャ確認
         if (view.getUint32(0) !== 0x89504e47) { resolve(null); return; }
         let offset = 8;
         while (offset < buf.byteLength - 12) {
@@ -173,15 +206,16 @@ async function getPNGMetadataDate(file) {
             view.getUint8(offset+4), view.getUint8(offset+5),
             view.getUint8(offset+6), view.getUint8(offset+7)
           );
+          if (type === 'eXIf') {
+            const exifData = new Uint8Array(buf, offset + 8, length);
+            const date = parseExifBytes(exifData);
+            if (date) { resolve(date); return; }
+          }
           if (type === 'tEXt' || type === 'iTXt') {
             const bytes = new Uint8Array(buf, offset + 8, Math.min(length, 256));
             const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-            // ISO形式 or スラッシュ区切りの日時を探す
             const m = text.match(/(\d{4})[-\/:](\d{2})[-\/:](\d{2})[T ](\d{2}):(\d{2})/);
-            if (m) {
-              resolve(`${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`);
-              return;
-            }
+            if (m) { resolve(`${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`); return; }
           }
           if (type === 'IEND') break;
           offset += 12 + length;
@@ -189,7 +223,7 @@ async function getPNGMetadataDate(file) {
         resolve(null);
       } catch { resolve(null); }
     };
-    reader.readAsArrayBuffer(file.slice(0, 65536));
+    reader.readAsArrayBuffer(file.slice(0, 131072));
   });
 }
 
@@ -292,7 +326,7 @@ function renderBoxes() {
     div.style.cssText = `left:${f.x}px;top:${f.y}px;width:${f.w}px;height:${f.h}px;`; 
     overlay.appendChild(div); 
   }); 
-  // 範囲選択なしでも次へ進める 
+  // 範囲選択なしでも次へ進める
 }
 
 $('btn-undo').onclick = () => { faces.pop(); renderBoxes(); };
@@ -344,10 +378,23 @@ $('btn-apply').onclick = () => {
       ctx.fillText(line, canvas.width / 2, boxY + padY + fs + i * lineH);
     });
   }
+  resultCanvas = canvas;
   const img = document.createElement('img'); img.src = canvas.toDataURL('image/png'); $('final-image-container').innerHTML = ''; $('final-image-container').appendChild(img); $('editor').style.display = 'none'; $('result-wrap').style.display = 'block';
 };
 
-$('btn-download').onclick = () => { const img = $('final-image-container').querySelector('img'); const nt = window.open(); nt.document.write('<body style="margin:0;background:#0f0f13;display:flex;align-items:center;justify-content:center;"><img src="' + img.src + '" style="max-width:100%;"></body>'); };
+$('btn-download').onclick = () => {
+  if (!resultCanvas) return;
+  resultCanvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'vote-certificate.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, 'image/png');
+};
 </script>
 </body>
 </html>
