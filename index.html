@@ -106,7 +106,7 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
     </div>
 
     <div id="step-nav" style="margin-top: 15px;">
-      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;" disabled>
+      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;">
         範囲選択を完了して日時確認へ <i class="ti ti-arrow-narrow-right"></i>
       </button>
     </div>
@@ -178,8 +178,7 @@ function parseExifBytes(data) {
       if (valOff + 16 > data.length) continue;
       let dt = '';
       for (let j = 0; j < 19 && valOff + j < data.length; j++) {
-        const c = data[valOff + j];
-        if (c === 0) break;
+        const c = data[valOff + j]; if (c === 0) break;
         dt += String.fromCharCode(c);
       }
       const m = dt.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/);
@@ -206,13 +205,10 @@ async function getPNGMetadataDate(file) {
             view.getUint8(offset+4), view.getUint8(offset+5),
             view.getUint8(offset+6), view.getUint8(offset+7)
           );
-          // eXIf チャンク：Android スクショの EXIF データ
           if (type === 'eXIf') {
-            const exifData = new Uint8Array(buf, offset + 8, length);
-            const date = parseExifBytes(exifData);
-            if (date) { resolve(date); return; }
+            const d = parseExifBytes(new Uint8Array(buf, offset + 8, length));
+            if (d) { resolve(d); return; }
           }
-          // tEXt / iTXt チャンク：ISO形式日時文字列
           if (type === 'tEXt' || type === 'iTXt') {
             const bytes = new Uint8Array(buf, offset + 8, Math.min(length, 256));
             const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
@@ -225,18 +221,15 @@ async function getPNGMetadataDate(file) {
         resolve(null);
       } catch { resolve(null); }
     };
-    reader.readAsArrayBuffer(file.slice(0, 131072)); // 128KB
+    reader.readAsArrayBuffer(file.slice(0, 131072));
   });
 }
 
 // ファイル名から日時を取得（Android スクショは命名規則に日時が入る）
-// 例: Screenshot_20240115_143022.png / Screenshot_2024-01-15-14-30-22.png
 function getDateFromFilename(file) {
   const name = file.name;
-  // YYYYMMDD_HHMMSS or YYYYMMDD-HHMMSS（Pixel / AQUOS / 多数の Android）
   let m = name.match(/(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/);
   if (m) return `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`;
-  // YYYY-MM-DD-HH-MM-SS（Samsung など）
   m = name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`;
   return null;
@@ -334,7 +327,7 @@ function renderBoxes() {
     div.style.cssText = `left:${f.x}px;top:${f.y}px;width:${f.w}px;height:${f.h}px;`; 
     overlay.appendChild(div); 
   }); 
-  $('btn-go-to-time').disabled = faces.length === 0; 
+  // 範囲選択なしでも次へ進める
 }
 
 $('btn-undo').onclick = () => { faces.pop(); renderBoxes(); };
@@ -387,7 +380,7 @@ $('btn-apply').onclick = () => {
     });
   }
   resultCanvas = canvas;
-  resultBlob = null; // 非同期で生成
+  resultBlob = null;
   canvas.toBlob(b => { resultBlob = b; }, 'image/png');
   const img = document.createElement('img'); img.src = canvas.toDataURL('image/png'); $('final-image-container').innerHTML = ''; $('final-image-container').appendChild(img); $('editor').style.display = 'none'; $('result-wrap').style.display = 'block';
 };
@@ -395,25 +388,19 @@ $('btn-apply').onclick = () => {
 $('btn-download').onclick = async () => {
   if (!resultCanvas) return;
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  // iOS: 別タブで開いて長押し保存
   if (isIOS) {
     const dataURL = resultCanvas.toDataURL('image/png');
     const w = window.open();
     w.document.write('<body style="margin:0;background:#0f0f13"><img src="' + dataURL + '" style="max-width:100%;display:block"></body>');
     return;
   }
-
-  // Android: Web Share API（ネイティブ共有シート経由でカメラロールに保存可）
   if (resultBlob && navigator.canShare) {
     const file = new File([resultBlob], 'vote-certificate.png', { type: 'image/png' });
     if (navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: '投票証明書' }); return; }
-      catch(e) { if (e.name === 'AbortError') return; } // キャンセルはそのまま終了
+      catch(e) { if (e.name === 'AbortError') return; }
     }
   }
-
-  // フォールバック: Blob URL ダウンロード
   const blob = resultBlob || await new Promise(r => resultCanvas.toBlob(r, 'image/png'));
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
