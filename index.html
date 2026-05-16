@@ -106,7 +106,7 @@ body { font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; background: #0f
     </div>
 
     <div id="step-nav" style="margin-top: 15px;">
-      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;">
+      <button class="btn btn-primary" id="btn-go-to-time" style="width: 100%; justify-content: center;" disabled>
         範囲選択を完了して日時確認へ <i class="ti ti-arrow-narrow-right"></i>
       </button>
     </div>
@@ -140,7 +140,7 @@ const $ = id => document.getElementById(id);
 let faces = []; let isDrawing = false; let startPos = { x: 0, y: 0 }; 
 let currentImg = null; let currentMode = 'move'; 
 let currentFile = null; let currentDataURL = null;
-let resultCanvas = null;
+let resultCanvas = null; let resultBlob = null;
 
 function getNowFormatted() { 
   const now = new Date(); 
@@ -156,7 +156,7 @@ async function getExifDate(file) {
   });
 }
 
-// PNG の eXIf チャンク内の EXIF バイト列から日時を解析（Android スクショ対応）
+// PNG の eXIf チャンク内 EXIF バイト列から日時を解析（Android スクショ対応）
 function parseExifBytes(data) {
   if (data.length < 8) return null;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -168,8 +168,8 @@ function parseExifBytes(data) {
   const get32 = o => view.getUint32(o, little);
   const ifd0 = get32(4);
   if (ifd0 + 2 > data.length) return null;
-  const entryCount = get16(ifd0);
-  for (let i = 0; i < entryCount; i++) {
+  const count = get16(ifd0);
+  for (let i = 0; i < count; i++) {
     const e = ifd0 + 2 + i * 12;
     if (e + 12 > data.length) break;
     const tag = get16(e);
@@ -206,11 +206,13 @@ async function getPNGMetadataDate(file) {
             view.getUint8(offset+4), view.getUint8(offset+5),
             view.getUint8(offset+6), view.getUint8(offset+7)
           );
+          // eXIf チャンク：Android スクショの EXIF データ
           if (type === 'eXIf') {
             const exifData = new Uint8Array(buf, offset + 8, length);
             const date = parseExifBytes(exifData);
             if (date) { resolve(date); return; }
           }
+          // tEXt / iTXt チャンク：ISO形式日時文字列
           if (type === 'tEXt' || type === 'iTXt') {
             const bytes = new Uint8Array(buf, offset + 8, Math.min(length, 256));
             const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
@@ -223,15 +225,21 @@ async function getPNGMetadataDate(file) {
         resolve(null);
       } catch { resolve(null); }
     };
-    reader.readAsArrayBuffer(file.slice(0, 131072));
+    reader.readAsArrayBuffer(file.slice(0, 131072)); // 128KB
   });
 }
 
-// ファイルの更新日時（スクショ保存時刻）を取得
-function getFileModifiedDate(file) {
-  if (!file.lastModified) return null;
-  const d = new Date(file.lastModified);
-  return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+// ファイル名から日時を取得（Android スクショは命名規則に日時が入る）
+// 例: Screenshot_20240115_143022.png / Screenshot_2024-01-15-14-30-22.png
+function getDateFromFilename(file) {
+  const name = file.name;
+  // YYYYMMDD_HHMMSS or YYYYMMDD-HHMMSS（Pixel / AQUOS / 多数の Android）
+  let m = name.match(/(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/);
+  if (m) return `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`;
+  // YYYY-MM-DD-HH-MM-SS（Samsung など）
+  m = name.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}`;
+  return null;
 }
 
 $('input-timestamp').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('input-timestamp').blur(); });
@@ -277,11 +285,11 @@ $('btn-go-to-time').onclick = async () => {
     return;
   }
 
-  const modDate = getFileModifiedDate(currentFile);
-  if (modDate) {
-    $('input-timestamp').value = modDate;
+  const nameDate = getDateFromFilename(currentFile);
+  if (nameDate) {
+    $('input-timestamp').value = nameDate;
     $('input-timestamp').readOnly = true;
-    $('time-label').innerHTML = '<i class="ti ti-clock"></i> スクショ日時 (ファイル保存日時から自動取得)';
+    $('time-label').innerHTML = '<i class="ti ti-clock"></i> スクショ日時 (ファイル名から自動取得)';
     return;
   }
 
@@ -326,7 +334,7 @@ function renderBoxes() {
     div.style.cssText = `left:${f.x}px;top:${f.y}px;width:${f.w}px;height:${f.h}px;`; 
     overlay.appendChild(div); 
   }); 
-  // 範囲選択なしでも次へ進める
+  $('btn-go-to-time').disabled = faces.length === 0; 
 }
 
 $('btn-undo').onclick = () => { faces.pop(); renderBoxes(); };
@@ -379,21 +387,39 @@ $('btn-apply').onclick = () => {
     });
   }
   resultCanvas = canvas;
+  resultBlob = null; // 非同期で生成
+  canvas.toBlob(b => { resultBlob = b; }, 'image/png');
   const img = document.createElement('img'); img.src = canvas.toDataURL('image/png'); $('final-image-container').innerHTML = ''; $('final-image-container').appendChild(img); $('editor').style.display = 'none'; $('result-wrap').style.display = 'block';
 };
 
-$('btn-download').onclick = () => {
+$('btn-download').onclick = async () => {
   if (!resultCanvas) return;
-  resultCanvas.toBlob(blob => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'vote-certificate.png';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-  }, 'image/png');
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  // iOS: 別タブで開いて長押し保存
+  if (isIOS) {
+    const dataURL = resultCanvas.toDataURL('image/png');
+    const w = window.open();
+    w.document.write('<body style="margin:0;background:#0f0f13"><img src="' + dataURL + '" style="max-width:100%;display:block"></body>');
+    return;
+  }
+
+  // Android: Web Share API（ネイティブ共有シート経由でカメラロールに保存可）
+  if (resultBlob && navigator.canShare) {
+    const file = new File([resultBlob], 'vote-certificate.png', { type: 'image/png' });
+    if (navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: '投票証明書' }); return; }
+      catch(e) { if (e.name === 'AbortError') return; } // キャンセルはそのまま終了
+    }
+  }
+
+  // フォールバック: Blob URL ダウンロード
+  const blob = resultBlob || await new Promise(r => resultCanvas.toBlob(r, 'image/png'));
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'vote-certificate.png';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 };
 </script>
 </body>
